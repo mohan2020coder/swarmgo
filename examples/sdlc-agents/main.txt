@@ -1,0 +1,261 @@
+// package main
+
+// import (
+// 	"bufio"
+// 	"bytes"
+// 	"context"
+// 	"fmt"
+// 	"log"
+// 	"os"
+// 	"os/exec"
+// 	"path/filepath"
+// 	"regexp"
+// 	"strings"
+// 	"time"
+
+// 	swarmgo "github.com/prathyushnallamothu/swarmgo"
+// 	"github.com/prathyushnallamothu/swarmgo/llm"
+// )
+
+// // --- CONFIG ---
+
+// const (
+// 	// Ollama
+// 	OllamaBaseURL = "http://localhost:11434"
+// 	ModelName     = "codellama" // change to a model you have (e.g., "mistral", "llama2", etc.)
+
+// 	// Runner
+// 	DefaultLang       = "python"
+// 	DockerImagePython = "python:3.11-alpine"
+
+// 	// Timeouts
+// 	ModelTimeout = 120 * time.Second
+// 	RunTimeout   = 15 * time.Second
+// 	MaxTurns     = 6 // safety cap
+// )
+
+// // --- AGENTS ---
+
+// func planner() *swarmgo.Agent {
+// 	return &swarmgo.Agent{
+// 		Name:         "Planner",
+// 		Instructions: "You are the Project Planner. Break the user's SDLC task into a clear, short plan with steps and acceptance criteria. Keep it concise.",
+// 		Model:        ModelName,
+// 	}
+// }
+
+// func architect() *swarmgo.Agent {
+// 	return &swarmgo.Agent{
+// 		Name: "Architect",
+// 		Instructions: `You are the Software Architect. Propose a small, clean design with:
+// - brief architecture notes
+// - file/module layout
+// - important data structures
+// - edge cases to consider
+// Return a short rationale.`,
+// 		Model: ModelName,
+// 	}
+// }
+
+// func coder() *swarmgo.Agent {
+// 	return &swarmgo.Agent{
+// 		Name: "Coder",
+// 		Instructions: "You are the Implementer. Write the minimal code to satisfy the plan & design.\nReturn code in ONE fenced block, e.g.:\n```python\n# code...\n```\nFocus on correctness and clarity. Add brief inline comments. If the user didn't specify a language, prefer Python.",
+// 		Model: ModelName,
+// 	}
+// }
+
+// func reviewer() *swarmgo.Agent {
+// 	return &swarmgo.Agent{
+// 		Name: "Reviewer",
+// 		Instructions: `You are the Code Reviewer. Do a quick pass for correctness, edge cases, and small improvements.
+// If code is acceptable, say "APPROVED".
+// If not, suggest minimal fixes and provide a corrected code block in the same language.`,
+// 		Model: ModelName,
+// 	}
+// }
+
+// // --- RUNNER ---
+
+// type RunResult struct {
+// 	Language string
+// 	Stdout   string
+// 	Stderr   string
+// 	ExitCode int
+// }
+
+// var codeFenceRx = regexp.MustCompile("(?s)```([a-zA-Z0-9_+-]*)\\s*(.*?)```")
+
+// func findCodeBlock(s string) (lang, code string, found bool) {
+// 	m := codeFenceRx.FindStringSubmatch(s)
+// 	if len(m) == 3 {
+// 		lang = strings.ToLower(strings.TrimSpace(m[1]))
+// 		code = m[2]
+// 		if lang == "" {
+// 			lang = DefaultLang
+// 		}
+// 		return lang, code, true
+// 	}
+// 	return "", "", false
+// }
+
+// func runInDocker(ctx context.Context, language, code string) (*RunResult, error) {
+// 	switch strings.ToLower(language) {
+// 	case "py", "python":
+// 		return runPython(ctx, code)
+// 	default:
+// 		return nil, fmt.Errorf("unsupported language: %s", language)
+// 	}
+// }
+
+// func runPython(ctx context.Context, code string) (*RunResult, error) {
+// 	// create temp dir & file
+// 	dir, err := os.MkdirTemp("", "agent-run-*")
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer os.RemoveAll(dir)
+
+// 	srcPath := filepath.Join(dir, "main.py")
+// 	if err := os.WriteFile(srcPath, []byte(code), 0644); err != nil {
+// 		return nil, err
+// 	}
+
+// 	// docker run --rm -v dir:/app -w /app python:3.11-alpine python main.py
+// 	args := []string{
+// 		"run", "--rm",
+// 		"-v", fmt.Sprintf("%s:/app", dir),
+// 		"-w", "/app",
+// 		DockerImagePython,
+// 		"python", "main.py",
+// 	}
+
+// 	cmd := exec.CommandContext(ctx, "docker", args...)
+// 	var outBuf, errBuf bytes.Buffer
+// 	cmd.Stdout = &outBuf
+// 	cmd.Stderr = &errBuf
+
+// 	err = cmd.Run()
+// 	exitCode := 0
+// 	if err != nil {
+// 		if exitErr, ok := err.(*exec.ExitError); ok {
+// 			exitCode = exitErr.ExitCode()
+// 		} else {
+// 			exitCode = 1
+// 		}
+// 	}
+
+// 	return &RunResult{
+// 		Language: "python",
+// 		Stdout:   outBuf.String(),
+// 		Stderr:   errBuf.String(),
+// 		ExitCode: exitCode,
+// 	}, nil
+// }
+
+// // --- ORCHESTRATOR ---
+
+// type Turn struct {
+// 	Agent  string
+// 	Output string
+// }
+
+// func askAgent(ctx context.Context, client *swarmgo.Swarm, agent *swarmgo.Agent, transcript []llm.Message) (string, error) {
+// 	ctx2, cancel := context.WithTimeout(ctx, ModelTimeout)
+// 	defer cancel()
+
+// 	resp, err := client.Run(ctx2, agent, transcript, nil, "", false, false, 5, true)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	if len(resp.Messages) == 0 {
+// 		return "", fmt.Errorf("empty LLM response")
+// 	}
+// 	return resp.Messages[len(resp.Messages)-1].Content, nil
+// }
+
+// func main() {
+// 	// Ensure Docker is available
+// 	if _, err := exec.LookPath("docker"); err != nil {
+// 		log.Fatal("Docker not found in PATH. Please install & start Docker.")
+// 	}
+
+// 	// Remind user
+// 	fmt.Println("NOTE: Make sure `ollama serve` is running, and the model is pulled:", ModelName)
+
+// 	client := swarmgo.NewSwarm(OllamaBaseURL, llm.Ollama)
+
+// 	// Agents
+// 	agents := []*swarmgo.Agent{planner(), architect(), coder(), reviewer()}
+
+// 	// Example user story: you can replace this with any SDLC task prompt
+// 	userTask := `Build a small CLI tool that reads a number N and prints the first N Fibonacci numbers, space-separated. Include simple input validation.`
+
+// 	// Conversation transcript for the crew
+// 	transcript := []llm.Message{
+// 		{Role: llm.RoleSystem, Content: "You are a cooperative multi-agent software team. Keep answers concise."},
+// 		{Role: llm.RoleUser, Content: userTask},
+// 	}
+
+// 	var turns []Turn
+// 	ctx := context.Background()
+
+// 	for i, agent := range agents {
+// 		out, err := askAgent(ctx, client, agent, transcript)
+// 		if err != nil {
+// 			log.Fatalf("%s error: %v", agent.Name, err)
+// 		}
+// 		turns = append(turns, Turn{Agent: agent.Name, Output: out})
+// 		transcript = append(transcript, llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("[%s]\n%s", agent.Name, out)})
+
+// 		// After Coder or Reviewer, if we see code, run it
+// 		if agent.Name == "Coder" || agent.Name == "Reviewer" {
+// 			if lang, code, ok := findCodeBlock(out); ok {
+// 				fmt.Printf("\n--- Detected code (%s). Executing in Docker sandbox... ---\n", lang)
+// 				runCtx, cancel := context.WithTimeout(ctx, RunTimeout)
+// 				res, err := runInDocker(runCtx, lang, code)
+// 				cancel()
+// 				if err != nil {
+// 					fmt.Println("Runner error:", err)
+// 				} else {
+// 					fmt.Println("Exit Code:", res.ExitCode)
+// 					if strings.TrimSpace(res.Stdout) != "" {
+// 						fmt.Println("STDOUT:")
+// 						scan(res.Stdout)
+// 					}
+// 					if strings.TrimSpace(res.Stderr) != "" {
+// 						fmt.Println("STDERR:")
+// 						scan(res.Stderr)
+// 					}
+
+// 					// Feed run output back for the Reviewer if next agent is Reviewer
+// 					if agent.Name == "Coder" && i+1 < len(agents) && agents[i+1].Name == "Reviewer" {
+// 						transcript = append(transcript, llm.Message{
+// 							Role:    llm.RoleUser,
+// 							Content: fmt.Sprintf("Execution results:\nExit Code: %d\nSTDOUT:\n%s\nSTDERR:\n%s\nPlease review considering these results.", res.ExitCode, res.Stdout, res.Stderr),
+// 						})
+// 					}
+// 				}
+// 			}
+// 		}
+
+// 		// safety cap
+// 		if len(turns) >= MaxTurns {
+// 			break
+// 		}
+// 	}
+
+// 	// Pretty-print the conversation summary
+// 	fmt.Println("\n================= SDLC CREW SUMMARY =================")
+// 	for _, t := range turns {
+// 		fmt.Printf("\n[%s]\n%s\n", t.Agent, t.Output)
+// 	}
+// 	fmt.Println("=====================================================")
+// }
+
+// func scan(s string) {
+// 	sc := bufio.NewScanner(strings.NewReader(s))
+// 	for sc.Scan() {
+// 		fmt.Println(sc.Text())
+// 	}
+// }

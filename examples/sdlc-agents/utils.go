@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	swarmgo "github.com/prathyushnallamothu/swarmgo"
-	"github.com/prathyushnallamothu/swarmgo/llm"
+	swarmgo "github.com/mohan2020coder/swarmgo"
+	"github.com/mohan2020coder/swarmgo/llm"
 )
 
 var codeFenceRx = regexp.MustCompile("(?s)```([a-zA-Z0-9_+-]*)\\s*(.*?)```")

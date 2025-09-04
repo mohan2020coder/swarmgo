@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/prathyushnallamothu/swarmgo/llm"
+	"github.com/mohan2020coder/swarmgo/llm"
 )
 
 // Interface for memory providers

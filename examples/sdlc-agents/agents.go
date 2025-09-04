@@ -1,6 +1,6 @@
 package main
 
-import swarmgo "github.com/prathyushnallamothu/swarmgo"
+import swarmgo "github.com/mohan2020coder/swarmgo"
 
 // Define reusable agents as variables instead of functions
 var (

@@ -1,7 +1,7 @@
 package swarmgo
 
 import (
-	"github.com/prathyushnallamothu/swarmgo/llm"
+	"github.com/mohan2020coder/swarmgo/llm"
 )
 
 // Agent represents an entity with specific attributes and behaviors.

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 
-	swarmgo "github.com/prathyushnallamothu/swarmgo"
-	"github.com/prathyushnallamothu/swarmgo/llm"
+	swarmgo "github.com/mohan2020coder/swarmgo"
+	"github.com/mohan2020coder/swarmgo/llm"
 )
 
 func main() {

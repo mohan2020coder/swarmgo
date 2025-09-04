@@ -9,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/prathyushnallamothu/swarmgo/llm"
+	"github.com/mohan2020coder/swarmgo/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )

@@ -109,43 +109,39 @@ func NewSwarmWithConfig(apiKey string, provider llm.LLMProvider, config *Config)
 	switch provider {
 	case llm.OpenAI:
 		client = llm.NewOpenAILLM(apiKey)
+
 	case llm.Gemini:
 		client, err = llm.NewGeminiLLM(apiKey)
 		if err != nil {
 			log.Printf("Failed to create Gemini client: %v", err)
-			return &Swarm{
-				initialized: false,
-				config:      config,
-			}
+			return &Swarm{initialized: false, config: config}
 		}
+
 	case llm.Claude:
 		client = llm.NewClaudeLLM(apiKey)
+
 	case llm.Ollama:
 		client, err = llm.NewOllamaLLM()
 		if err != nil {
 			log.Printf("Failed to create Ollama client: %v", err)
-			return &Swarm{
-				initialized: false,
-				config:      config,
-			}
+			return &Swarm{initialized: false, config: config}
 		}
+
 	case llm.DeepSeek:
 		client = llm.NewDeepSeekLLM(apiKey)
+
+	case llm.OpenRouter: // 👈 NEW
+		client = llm.NewOpenRouterLLM(apiKey)
+
 	default:
 		log.Printf("Unsupported LLM provider: %v", provider)
-		return &Swarm{
-			initialized: false,
-			config:      config,
-		}
+		return &Swarm{initialized: false, config: config}
 	}
 
 	// Verify the client was created properly
 	if client == nil {
 		log.Println("Warning: Failed to initialize LLM client")
-		return &Swarm{
-			initialized: false,
-			config:      config,
-		}
+		return &Swarm{initialized: false, config: config}
 	}
 
 	return &Swarm{

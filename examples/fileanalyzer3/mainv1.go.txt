@@ -1,0 +1,373 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// Defaults
+var DefaultInclude = []string{"*.py", "*.js", "*.jsx", "*.ts", "*.tsx", "*.go", "*.java", "*.c", "*.cpp", "*.h", "*.md", "Dockerfile", "Makefile", "*.yaml", "*.yml"}
+var DefaultExclude = []string{"assets/", "data/", "images/", "public/", "static/", "temp/", "docs/", "venv/", "node_modules/", "tests/", "examples/", "dist/", "build/", ".git/", ".github/"}
+
+const DefaultOllamaURL = "http://localhost:11434"
+
+func main() {
+	// Command line flags
+	repo := flag.String("repo", "", "GitHub repo URL (public)")
+	dir := flag.String("dir", "", "Local directory path to analyze")
+	model := flag.String("model", "llama3.2", "Ollama model name (eg. llama3.2 or codellama)")
+	ollamaURL := flag.String("ollama-url", DefaultOllamaURL, "Ollama API base URL")
+	output := flag.String("output", "output", "Output directory")
+	maxSize := flag.Int("max-size", 200000, "Maximum file size (bytes) to read")
+	maxAbs := flag.Int("max-abstractions", 15, "Maximum abstractions to identify")
+	language := flag.String("language", "english", "Language for tutorial")
+	apiChoice := flag.String("api", "ollama", "Which API to use: 'ollama' or 'longcat'")
+	longcatKey := flag.String("api-key", "", "API key for LongCat API")
+
+	flag.Parse()
+
+	if *repo == "" && *dir == "" {
+		log.Fatal("provide either --repo or --dir")
+	}
+
+	if *apiChoice != "ollama" && *apiChoice != "longcat" {
+		log.Fatalf("invalid --api value: %s; must be 'ollama' or 'longcat'", *apiChoice)
+	}
+
+	if *apiChoice == "longcat" && *longcatKey == "" {
+		log.Fatal("--api-key is required when using LongCat API")
+	}
+
+	// Clone or use local directory
+	var workDir string
+	var err error
+	if *repo != "" {
+		workDir, err = cloneRepo(*repo)
+		if err != nil {
+			log.Fatalf("failed to clone repo: %v", err)
+		}
+		defer os.RemoveAll(workDir)
+	} else {
+		workDir = *dir
+	}
+
+	// Collect files
+	files, err := collectFiles(workDir, DefaultInclude, DefaultExclude, int64(*maxSize))
+	if err != nil {
+		log.Fatalf("collect files: %v", err)
+	}
+
+	if len(files) == 0 {
+		log.Fatalf("no files matched patterns in %s", workDir)
+	}
+
+	// Create output dir
+	if err := os.MkdirAll(*output, 0755); err != nil {
+		log.Fatalf("create output dir: %v", err)
+	}
+
+	fmt.Printf("Found %d files — summarizing with model %s using %s API\n", len(files), *model, *apiChoice)
+
+	fileSummaries := make([]string, 0, len(files))
+
+	// Summarize each file individually and store summary in memory & disk
+	for i, f := range files {
+		fmt.Printf("[%d/%d] Summarizing %s\n", i+1, len(files), f)
+		content, err := os.ReadFile(f)
+		if err != nil {
+			log.Printf("warning: read %s: %v — skipping", f, err)
+			continue
+		}
+
+		prompt := buildFileSummaryPrompt(filepath.Base(f), f, string(content), *language)
+		var resp string
+		if *apiChoice == "ollama" {
+			resp, err = callOllama(*ollamaURL, *model, prompt)
+		} else {
+			resp, err = callLongCat(*longcatKey, prompt)
+		}
+		if err != nil {
+			log.Printf("warning: LLM summary failed for %s: %v — saving fallback summary", f, err)
+			resp = fmt.Sprintf("(error summarizing file: %v)", err)
+		}
+
+		// Save each file summary separately
+		summaryFile := filepath.Join(*output, fmt.Sprintf("summary_%02d_%s.md", i+1, sanitizeFilename(filepath.Base(f))))
+		err = os.WriteFile(summaryFile, []byte(resp), 0644)
+		if err != nil {
+			log.Printf("warning: failed to save summary for %s: %v", f, err)
+		}
+
+		// Append to aggregate summaries
+		fileSummaries = append(fileSummaries, fmt.Sprintf("### File: %s\nPath: %s\n\n%s\n---\n", filepath.Base(f), f, resp))
+
+		// Be polite to API
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Combine all summaries for abstractions prompt
+	summaryAggregate := strings.Join(fileSummaries, "\n\n")
+
+	// Generate abstractions
+	absPrompt := buildAbstractionPrompt(summaryAggregate, *maxAbs, *language)
+	fmt.Println("Identifying abstractions and relationships...")
+
+	var absResp string
+	if *apiChoice == "ollama" {
+		absResp, err = callOllama(*ollamaURL, *model, absPrompt)
+	} else {
+		absResp, err = callLongCat(*longcatKey, absPrompt)
+	}
+	if err != nil {
+		log.Printf("warning: abstraction extraction failed: %v", err)
+		absResp = "(error extracting abstractions)"
+	}
+
+	absFile := filepath.Join(*output, "abstractions.md")
+	_ = os.WriteFile(absFile, []byte(absResp), 0644)
+
+	// Generate chapter plan
+	planPrompt := buildChapterPlanPrompt(absResp, *language)
+	fmt.Println("Generating chapter plan...")
+
+	var planResp string
+	if *apiChoice == "ollama" {
+		planResp, err = callOllama(*ollamaURL, *model, planPrompt)
+	} else {
+		planResp, err = callLongCat(*longcatKey, planPrompt)
+	}
+	if err != nil {
+		log.Printf("warning: chapter planning failed: %v", err)
+		planResp = "(error generating chapter plan)"
+	}
+
+	planFile := filepath.Join(*output, "chapter_plan.md")
+	_ = os.WriteFile(planFile, []byte(planResp), 0644)
+
+	// Parse chapters from plan
+	chapters := parseChapters(planResp)
+	if len(chapters) == 0 {
+		log.Printf("no chapters parsed from plan; check %s for raw output", planFile)
+		// Fail gracefully, but continue so user can inspect files
+		return
+	}
+
+	// Generate each chapter separately and save
+	var tutorialParts []string
+	for i, chapter := range chapters {
+		fmt.Printf("Generating chapter %d/%d\n", i+1, len(chapters))
+		prompt := buildChapterContentPrompt(chapter, summaryAggregate, absResp, *language)
+
+		var content string
+		if *apiChoice == "ollama" {
+			content, err = callOllama(*ollamaURL, *model, prompt)
+		} else {
+			content, err = callLongCat(*longcatKey, prompt)
+		}
+		if err != nil {
+			log.Printf("warning: failed to generate chapter %d: %v", i+1, err)
+			content = fmt.Sprintf("(error generating chapter %d)", i+1)
+		}
+
+		chapterFile := filepath.Join(*output, fmt.Sprintf("chapter_%02d.md", i+1))
+		if err := os.WriteFile(chapterFile, []byte(content), 0644); err != nil {
+			log.Printf("warning: failed to save chapter file %s: %v", chapterFile, err)
+		}
+		tutorialParts = append(tutorialParts, content)
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	fullTutorial := strings.Join(tutorialParts, "\n\n---\n\n")
+	outPath := filepath.Join(*output, "TUTORIAL.md")
+	if err := os.WriteFile(outPath, []byte(fullTutorial), 0644); err != nil {
+		log.Fatalf("write output: %v", err)
+	}
+
+	fmt.Printf("Tutorial generated successfully at %s\n", outPath)
+}
+
+// cloneRepo clones git repo to temp dir and returns the path
+func cloneRepo(repo string) (string, error) {
+	tmp, err := os.MkdirTemp("", "pocketflow_repo_")
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("Cloning %s into %s\n", repo, tmp)
+	cmd := exec.Command("git", "clone", "--depth", "1", repo, tmp)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		os.RemoveAll(tmp)
+		return "", err
+	}
+	return tmp, nil
+}
+
+// collectFiles collects files matching include patterns and excluding excluded dirs, skips large files
+func collectFiles(root string, includes, excludes []string, maxSize int64) ([]string, error) {
+	var files []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip
+		}
+		if info.IsDir() {
+			for _, ex := range excludes {
+				if strings.HasPrefix(path, filepath.Join(root, ex)) || strings.Contains(path, ex) {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if info.Size() > maxSize {
+			return nil
+		}
+		matched := false
+		base := filepath.Base(path)
+		for _, inc := range includes {
+			if strings.HasSuffix(inc, "/") {
+				continue
+			}
+			if ok, _ := filepath.Match(inc, base); ok {
+				matched = true
+				break
+			}
+			if strings.HasSuffix(inc, base) {
+				matched = true
+				break
+			}
+			if inc == "Dockerfile" || inc == "Makefile" {
+				if base == inc {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files, err
+}
+
+func sanitizeFilename(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == os.PathSeparator || r == ' ' || r == ':' || r == '\\' || r == '/' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|' {
+			return '_'
+		}
+		return r
+	}, name)
+}
+
+// Prompt builders
+
+func buildFileSummaryPrompt(filename, path, content, language string) string {
+	fence := "```"
+	return fmt.Sprintf(`You are a code summarization assistant. Produce a clear, developer-friendly summary in %s for the file %s (path: %s).
+
+Instructions:
+1) Provide a short "one_line" summary (1 sentence).
+2) Provide "purpose" (what this file is responsible for).
+3) List major functions/classes (name + 1-line description).
+4) List key technical details and any TODOs or important comments.
+5) Provide a short example of how this file is used, if applicable.
+
+Respond in Markdown. Begin with "%s - File Summary" as a header, then the sections.
+
+File content:
+%s
+%s
+%s
+`,
+		language, filename, path, filename, fence, snippet(content, 20000), fence)
+}
+
+func buildAbstractionPrompt(summaries string, maxAbs int, language string) string {
+	return fmt.Sprintf(`You are an assistant that identifies architectural abstractions and relationships for a codebase. Given the following file summaries (Markdown), identify up to %d core abstractions/components (eg: "TaskScheduler", "Database Layer", "API Handlers", "Auth Module") and for each abstraction provide:
+- name
+- one-line description
+- files that implement or relate to it (list)
+- dependencies (what it uses or requires)
+- responsibilities and key details
+
+Provide output as Markdown with clear sections. Use %s language.
+
+File summaries:
+%s
+`,
+		maxAbs, language, summaries)
+}
+
+func buildChapterPlanPrompt(abstractions, language string) string {
+	return fmt.Sprintf(`You are an assistant writing a tutorial plan for a codebase. Based on the architectural abstractions below, generate a detailed chapter outline for a tutorial in %s language.
+
+Please format each chapter as a Markdown header in the form "## Chapter X: Title" followed by a short description paragraph.
+
+Architectural abstractions:
+%s
+`,
+		language, abstractions)
+}
+
+func buildChapterContentPrompt(chapter, summaries, abstractions, language string) string {
+	return fmt.Sprintf(`You are writing a developer tutorial in %s language. Use the chapter plan below, plus the file summaries and architectural abstractions, to write a detailed chapter tutorial.
+
+Chapter plan:
+%s
+
+File summaries:
+%s
+
+Architectural abstractions:
+%s
+
+Write a clear and concise tutorial chapter.
+`,
+		language, chapter, summaries, abstractions)
+}
+
+// parseChapters extracts chapter headings and descriptions from plan text
+func parseChapters(plan string) []string {
+	lines := strings.Split(plan, "\n")
+	chapterRE := regexp.MustCompile(`(?i)^##\s*chapter\s*\d+.*`)
+	chapters := []string{}
+
+	for i := 0; i < len(lines); i++ {
+		if chapterRE.MatchString(lines[i]) {
+			var sb strings.Builder
+			sb.WriteString(lines[i])
+			sb.WriteString("\n")
+
+			// Capture all lines until next chapter or EOF
+			for j := i + 1; j < len(lines); j++ {
+				if chapterRE.MatchString(lines[j]) {
+					break
+				}
+				if strings.TrimSpace(lines[j]) == "" && sb.Len() > 0 {
+					// Stop at empty line after description
+					break
+				}
+				sb.WriteString(lines[j])
+				sb.WriteString("\n")
+			}
+			chapters = append(chapters, sb.String())
+		}
+	}
+
+	return chapters
+}
+
+func snippet(text string, max int) string {
+	if len(text) > max {
+		return text[:max] + "\n... [truncated]"
+	}
+	return text
+}

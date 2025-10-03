@@ -1,0 +1,18 @@
+version: "3.8"
+services:
+  docx-service:
+    build: ./python-docx-service
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./python-docx-service/templates:/app/templates
+      - ./outputs:/tmp/docx_outputs
+
+  orchestrator:
+    build: ./orchestrator
+    ports:
+      - "8080:8080"
+    depends_on:
+      - docx-service
+    volumes:
+      - ./cache:/app/cache

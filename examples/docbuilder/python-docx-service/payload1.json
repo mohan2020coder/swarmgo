@@ -1,0 +1,110 @@
+{
+    "title": "Student Management System – Technical Documentation",
+    "author": "Moni",
+    "outline": {
+      "sections": [
+        "Introduction",
+        "Requirements",
+        "Architecture",
+        "Database Design",
+        "API Design",
+        "Business Logic",
+        "Authentication & Authorization",
+        "Testing & Quality Assurance",
+        "Deployment & DevOps",
+        "Future Work",
+        "Conclusion",
+        "Appendices"
+      ]
+    },
+    "content": {
+      "Introduction": "In this document, we present the full technical specification and design of a **Student Management System** built using **Go (Golang)**. The system is intended to serve educational institutions by providing modules for student records, course enrollment, grading, attendance tracking, and reporting.\n\nThis introduction covers the scope, objectives, stakeholders, and an overview of the system’s benefits.\n\n**Scope & Objectives**\n- Provide CRUD operations on students, courses, and enrollments.\n- Track attendance per student per course.\n- Record grades, compute transcripts, and generate reports.\n- Secure access with role‑based permissions (admin, instructor, student).\n- Expose RESTful APIs for client applications.\n- Support high throughput and concurrency.\n\n**Stakeholders**\n- System administrators\n- Instructors / Professors\n- Students / Learners\n- Institutional / academic office\n- Maintenance & DevOps teams",
+      "Requirements": "### Functional Requirements\n1. Student Management: Create, update, delete, and view student profiles (name, date of birth, address, contact).\n2. Course Management: Definition and maintenance of courses (title, description, credits).\n3. Enrollment: Enroll students into courses, allow drop, view enrollment status.\n4. Attendance: Mark attendance per class session, get attendance reports.\n5. Grading: Record grades per student for each enrolled course, compute GPA / aggregate transcripts.\n6. Reporting & Export: Generate reports per semester (PDF, CSV, JSON), dashboards for usage metrics.\n7. Role & Access Control: Admin, instructor, student roles with different permissions.\n8. Audit Logs & History: Track changes (who changed what and when).\n\n### Non‑Functional Requirements\n- Performance: System must handle at least 1000 concurrent users with average latency < 200 ms.\n- Scalability: Support horizontal scaling of API servers.\n- Reliability: High availability with automatic failover.\n- Security: Data encryption at rest and transit, input validation, sanitization.\n- Maintainability: Modular code, clear APIs, documentation, test coverage.\n- Extensibility: Design to allow new modules (messaging, notifications) in future.",
+      "Architecture": "The system adopts a **layered architecture**:\n\n1. **Presentation / API Layer**: Receives HTTP requests, validates inputs, and delegates to services.\n2. **Service / Business Logic Layer**: Implements domain rules (enrollment validations, grade policies).\n3. **Data Access Layer (DAL)**: Interfaces with the database, using repository patterns or ORM (e.g. GORM, sqlx).\n\nWe also use additional components:\n- **Middleware**: Logging, request tracing, CORS, authentication, rate limiting.\n- **Asynchronous Workers / Job Queue**: For long‑running tasks (report generation, email sending).\n- **Cache Layer**: In memory (Redis) for frequent reads (e.g. student list, courses catalog).\n\nA high‑level diagram is provided below.\n\n(See “Diagrams” section for the architecture image.)",
+      "Database Design": "This section describes tables, relationships, referential integrity, indexes, and migration strategies.\n\n**Entity‑Relationship Overview**\nWe have the following core entities: `students`, `courses`, `enrollments`, `attendance_records`, `grades`, `users` (for auth), `roles`, `sessions`.\n\n**Tables & Columns**\n| Table              | Primary Key | Key Columns                            | Description                                 |\n|--------------------|-------------|----------------------------------------|---------------------------------------------|\n| students           | student_id  | name, dob, email, address, joined_at   | Basic student master records                |\n| courses            | course_id   | title, description, credits             | Course catalog                              |\n| enrollments        | enroll_id   | student_id (FK), course_id (FK), status, enrolled_at | Links students and courses         |\n| attendance_records | att_id      | enroll_id (FK), date, status            | Attendance per enrollment per date           |\n| grades             | grade_id    | enroll_id (FK), grade_value, graded_on  | Grades for enrollments                       |\n| users              | user_id     | username, hashed_password, role_id      | Authentication / authorization users         |\n| roles              | role_id     | role_name                               | Role definitions like admin, instructor, student |\n| sessions           | session_id  | user_id (FK), token, expires_at         | Active login sessions                          |\n\n**Indexes & Constraints**\n- Unique index on `users.username`.\n- Foreign key constraints: `enrollments.student_id → students.student_id`, etc.\n- Composite index on `attendance_records (enroll_id, date)` for fast lookup.\n\n**Migrations**\nWe use a migrations tool (e.g. `golang-migrate`) to apply versioned SQL scripts. Each migration adds or modifies tables with forward / backward compatibility.\n\nIn the appendices, you’ll find full SQL‑migration scripts and normalization rationale.",
+      "API Design": "Below is a catalog of major REST endpoints, with request/response schemas and sample usage.\n\n**Endpoints List**\n1. `GET /students` – List students (with paging)\n2. `POST /students` – Create a new student\n3. `GET /students/{id}` – Retrieve a student by ID\n4. `PUT /students/{id}` – Update student data\n5. `DELETE /students/{id}` – Remove student\n6. `GET /courses` – List all courses\n7. `POST /courses` – Add a course\n8. `GET /courses/{id}` – Course details\n9. `POST /enrollments` – Enroll a student in a course\n10. `GET /grades/{student_id}` – Fetch grade report for student\n11. `GET /attendance/{student_id}` – Attendance history\n\n**Sample Request / Response**\n```json\n// POST /students\n{\n  \"name\": \"Alice Johnson\",\n  \"dob\": \"2002-04-15\",\n  \"email\": \"alice@example.com\",\n  \"address\": \"123 Main St\"\n}\n```\n```json\n// Response 201 Created\n{\n  \"student_id\": 101,\n  \"name\": \"Alice Johnson\",\n  \"dob\": \"2002-04-15\",\n  \"email\": \"alice@example.com\",\n  \"address\": \"123 Main St\",\n  \"joined_at\": \"2025-10-03T12:00:00Z\"\n}\n```\n\nEach endpoint shall return appropriate HTTP status codes (200 OK, 201 Created, 400 Bad Request, 404 Not Found, 500 Internal Server Error). Detailed error bodies follow a uniform schema:\n```json\n{\n  \"error_code\": \"STUDENT_NOT_FOUND\",\n  \"message\": \"No student found with ID 999\",\n  \"details\": null\n}\n```",
+      "Business Logic": "The business logic layer enforces rules and policies in the domain. Key concerns include:\n\n**Enrollment Rules**\n- A student cannot enroll in the same course twice.\n- Enrollment must be open (within add/drop window).\n- Maximum capacity per course enforced.\n- Prerequisite courses check.\n\n**Grade Computation**\n- Compute GPA by weighted average of course credits.\n- Handle pass/fail vs graded courses.\n- Late submissions or grade overrides logic.\n\n**Attendance Policies**\n- If attendance falls below threshold (e.g. 75 %), student may be ineligible for final assessment.\n- Missing dates, excused absences, and make‑up policies handled.\n\n**Transaction Management**\nAll multi-step operations (e.g. enrolling a student AND creating attendance records) should run in a DB transaction to ensure consistency. Use Go’s `database/sql` or a transaction wrapper in an ORM.\n\n**Concurrency & Synchronization**\nBecause multiple requests may hit the same student enrollment concurrently, use optimistic locking (version fields) or serialized transactions to avoid race conditions. Use Go’s channels or locks carefully only in in‑memory caching contexts.",
+      "Authentication & Authorization": "Security is critical. Below is the scheme:\n\n**Authentication**\n- We use JWT (JSON Web Tokens) for stateless authorization.\n- On login: validate credentials, issue JWT signed with a secret or RSA key, embed claims (user_id, role, expiry).\n- Tokens expire after configurable duration (e.g. 1 hour). Refresh tokens can be supported via a separate endpoint.\n\n**Authorization / RBAC**\n- Each user has a `role` (admin, instructor, student).\n- Role permissions:\n  - **Admin**: full access to all modules (students, courses, enrollment, grading, reports)\n  - **Instructor**: manage courses they teach, grade and attendance, view students in their courses\n  - **Student**: view own record, enrollments, attendance, grades\n- Authorization middleware checks JWT, then verifies whether the requested endpoint + method is allowed by the role.\n\n**Password Storage & Security**\n- Use bcrypt or Argon2 for password hashing with salt.\n- Do not store plaintext passwords.\n- Enforce password strength policies (min length, special characters).\n\n**Token Revocation & Blacklisting**\n- Maintain a blacklist or “revoked tokens” store (e.g. Redis) for logout or forced invalidation.\n- Or use short token life and rotating refresh tokens.\n\n**Secure Defaults**\n- All endpoints require TLS/HTTPS.\n- Reject weak ciphers.\n- Input validation and sanitization for all request data.\n- Use helmet-like headers (CSP, HSTS) if a frontend is served.",
+      "Testing & Quality Assurance": "To ensure correctness and reliability, we cover multiple layers of testing:\n\n**Unit Tests**\n- Test individual functions and packages in isolation.\n- Use mocks or fakes for database / external dependencies.\n- Achieve >80% coverage in core modules.\n\n**Integration Tests**\n- Run tests against a real test database instance (e.g. a Dockerized PostgreSQL).\n- Test full API request flows (e.g. student creation → enrollment → grading).\n\n**End‑to‑End (E2E) Tests**\n- If a frontend or client exists, simulate user flows (login, enroll, view grade).\n\n**Performance / Load Testing**\n- Use tools like k6, Locust, or wrk to simulate concurrent load.\n- Measure throughput, latency, error rates under increasing load.\n\n**Continuous Integration (CI)**\n- On every commit / PR, automatically run tests, linting, static analysis (e.g. `go vet`, `golint`).\n- Fail builds on test failures or coverage decline.\n\n**Quality Tools**\n- Static code analyzers (e.g. `golangci-lint`) to catch style, bugs, complexity.\n- Vulnerability scanning (e.g. `gosec`) to catch security issues.\n\nIn appendices, sample test cases, test data, and CI YAML pipelines are included.",
+      "Deployment & DevOps": "This section describes how to deploy and operate the system in production.\n\n**Containerization**\n- Use Docker: write a `Dockerfile` for the API service, and for auxiliary services (Redis, database).\n- Use multi-stage builds to reduce image size.\n\n**Orchestration / Infrastructure**\n- Use Kubernetes (K8s) or any container orchestrator for scaling, service discovery, rolling updates.\n- Use Helm charts or Terraform to define infrastructure.\n\n**CI/CD Pipeline**\n- On code merge / tag: build binary, run tests, build Docker image, push to registry.\n- Deploy to staging first; run smoke tests; promote to production.\n- Use Blue/Green or Canary deployment strategy to reduce downtime.\n\n**Configuration / Secrets**\n- Use environment variables or secret stores (e.g. Vault, Kubernetes Secrets) for sensitive data.\n- Support multiple environments (dev, staging, production) with separate configuration files.\n\n**Monitoring & Alerts**\n- Expose health check endpoints (`/healthz`, `/metrics`).\n- Use Prometheus to scrape metrics; Grafana dashboards for visualization.\n- Set up alerting rules when error rates spike or latency increases.\n\n**Logging & Tracing**\n- Use structured logging (e.g. JSON format) with correlation IDs.\n- Integrate distributed tracing (OpenTelemetry) to trace request lifecycle.\n\n**Backup & Disaster Recovery**\n- Daily database backups with point‑in-time recovery.\n- Replication / read replicas for failover.\n- Plan for infrastructure failover and restore procedures.",
+      "Future Work": "Possible enhancements to the system include:\n- **Notification System**: email/SMS alerts for low attendance, grade posting.\n- **Reporting Dashboard / Analytics**: dashboards for trends (dropout, performance over time).\n- **Bulk Import / Export Tools**: CSV / Excel / API importers for large data ingestion.\n- **Plugin / Module System**: allow external modules to hook into enrollment or grading.\n- **Mobile Frontend / App**: native mobile client for students and instructors.\n- **AI / Recommendation Engine**: suggest courses, detect risk of dropout based on data.\n- **Localization & Multi‑language Support**.\n- **Audit & Compliance**: detailed audit trails, GDPR / data compliance modules.",
+      "Conclusion": "This document presented a complete technical roadmap for a Student Management System built in Go. We covered requirements, architecture, database design, APIs, business logic, security, testing, deployment, and future directions. With a modular and scalable design, this system can serve as a foundation for educational institutions and can evolve over time.\n\nSuccessful implementation will depend on high‑quality coding, rigorous testing, secure practices, and careful orchestration in production.",
+      "Appendices": "Appendix A: Full Go Code Snippets for key modules\nAppendix B: SQL Migration Files\nAppendix C: Sample Data (Students, Courses) JSON\nAppendix D: Glossary of Terms\nAppendix E: References & Bibliography"
+    },
+    "bullets": {
+      "Requirements": [
+        "CRUD operations for core entities",
+        "Attendance tracking by date",
+        "Grade management and transcript generation",
+        "Role‑based access permissions",
+        "Audit logging of changes",
+        "Export and reporting features",
+        "High concurrency support",
+        "Extensible plug‑in architecture"
+      ],
+      "Architecture": [
+        "Layered design (presentation, service, data)",
+        "Middleware for cross‑cutting concerns",
+        "Decoupling via interfaces & dependency injection",
+        "Use of caching for read optimization",
+        "Asynchronous background workers",
+        "Scalability via horizontal replication"
+      ],
+      "Future Work": [
+        "Notification & alerting system",
+        "Analytics dashboards",
+        "Bulk import/export tools",
+        "Mobile applications",
+        "Localization",
+        "Plugin system for extensions"
+      ]
+    },
+    "numbered": {
+      "API Design": [
+        "GET /students – list students",
+        "POST /students – create student",
+        "GET /students/{id} – fetch by ID",
+        "PUT /students/{id} – update student",
+        "DELETE /students/{id} – delete student",
+        "POST /enrollments – enroll student",
+        "GET /grades/{student_id} – student grades",
+        "GET /attendance/{student_id} – attendance record"
+      ],
+      "Testing & Quality Assurance": [
+        "Write unit tests for every package",
+        "Mock external dependencies",
+        "Run integration tests with real DB",
+        "Automate end‑to‑end user flows",
+        "Load test under stress scenarios",
+        "Use CI pipelines for automated validation"
+      ]
+    },
+    "tables": {
+      "API Design": {
+        "headers": ["Endpoint", "Method", "Description", "Auth Required"],
+        "rows": [
+          ["/students", "GET", "List all students", "Yes"],
+          ["/students", "POST", "Create a new student", "Yes (admin)"],
+          ["/students/{id}", "GET", "Get student by ID", "Yes"],
+          ["/students/{id}", "PUT", "Update student", "Yes (admin)"],
+          ["/students/{id}", "DELETE", "Delete student", "Yes (admin)"],
+          ["/enrollments", "POST", "Enroll student in course", "Yes (admin/instructor)"],
+          ["/grades/{student_id}", "GET", "Get transcript", "Yes"],
+          ["/attendance/{student_id}", "GET", "Get attendance", "Yes"]
+        ]
+      },
+      "Role Permissions": {
+        "headers": ["Role", "Allowed Modules / Actions"],
+        "rows": [
+          ["Admin", "Full access (students, courses, enrollments, reports)"],
+          ["Instructor", "Manage courses, record attendance & grades, view enrolled students"],
+          ["Student", "View own profile, grades, attendance, enroll / drop courses subject to rules"]
+        ]
+      }
+    },
+    "diagrams": {
+      "Architecture": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAFklEQVQ4T2NkoBAwUqifA0GoMRAhAAAIqgOZw0JtO8AAAAASUVORK5CYII=",
+      "Workflow Enrollment": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABKklEQVQ4T2NkoBAwUqifA0GoMRAiE8fHxcXE9vY2BgYGJiYmBhYGA4uLi4uLi4sLAwMDExMTExMTExMTE9PT09PT09fX19fX19fX19fX19fX1/3+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+8/f39/f39/f3//wEAAP//AwD0W1Fjv0g9ZgAAAABJRU5ErkJggg=="
+    }
+  }
+  
